@@ -96,6 +96,7 @@ def open_stream(stream_or_path, mode='rb'):
         if close:
             stream.close()
 
+total_write_length = 0
 
 OBJECT_TYPES = ['blob', 'tree', 'commit']
 def write_object(repo, objtype, data):
@@ -108,6 +109,13 @@ def write_object(repo, objtype, data):
         sha = compute_sha1_hash(header, stream)
         dir_path = os.path.join(repo, 'objects', sha[:2])
         path = os.path.join(dir_path, sha[2:])
+
+        # No need to write if file already exists
+        if os.path.exists(path):
+            return sha
+
+        global total_write_length
+        total_write_length += length
 
         os.makedirs(dir_path, exist_ok=True)
 
@@ -149,6 +157,54 @@ def read_object(repo, sha):
         if f:
             f.close()
 
+import math
+
+def convert_size(size_bytes):
+   if size_bytes == 0:
+       return "0B"
+   size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+   i = int(math.floor(math.log(size_bytes, 1024)))
+   p = math.pow(1024, i)
+   s = round(size_bytes / p, 2)
+   return "%s %s" % (s, size_name[i])
+
+def write_tree(repo, rootdir):
+
+    # TODO: remove
+    global total_write_length
+    total_write_length = 0
+
+    tree = []
+    for subdir, dirs, files in os.walk(rootdir):
+        rootdir = os.path.abspath(rootdir)
+        if not rootdir.endswith(os.path.sep):
+            rootdir += os.path.sep
+
+        for file in files:
+            path = os.path.abspath(os.path.join(subdir, file))
+            rel_path = path[len(rootdir):]
+
+            # TODO: now just ignore git folders
+            if rel_path.startswith('.git'):
+                continue
+
+            stat = os.stat(path)
+            mode = oct(stat.st_mode)[2:]
+            sha = write_object(repo, 'blob', path)
+
+            tree.append((mode, sha, rel_path))
+
+    entry_fmt = "'{}' '{}' '{}'"
+    tree_data = io.BytesIO('\n'.join([entry_fmt.format(*e) for e in tree]).encode())
+    sha = write_object(repo, 'tree', tree_data)
+
+    print("Total written: %s" % convert_size(total_write_length))
+
+    return sha
+
+
+def restore_tree(repo, sha):
+    pass
 
 if __name__ == '__main__':
 
