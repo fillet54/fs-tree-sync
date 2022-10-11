@@ -1,12 +1,11 @@
 """Filesystem Cache
 
-This library provides the functions and objects required to save filesystem views 
-in a cache. The file systems are stored in a object store that follows the git
-scm format. 
+This library provides the functions and objects required to save filesystem trees
+in a cache. The file systems are stored in git loose object store format.
 
 Since this libary is intended to work on filesystem that can have large files,
 this library attempts to use streams when possible to avoid requiring to load
-flies fully into memory.
+files fully into memory.
 """
 
 import io, os, hashlib, zlib
@@ -100,7 +99,9 @@ total_write_length = 0
 
 OBJECT_TYPES = ['blob', 'tree', 'commit']
 def write_object(repo, objtype, data):
-    '''Writes a git object to a git object store'''
+    '''Writes a git object to a git object store
+
+    returns sha, size'''
     assert objtype in OBJECT_TYPES, "objtype must be one of %r" % OBJECT_TYPES
 
     with open_stream(data, 'rb') as stream:
@@ -112,7 +113,7 @@ def write_object(repo, objtype, data):
 
         # No need to write if file already exists
         if os.path.exists(path):
-            return sha
+            return sha, length
 
         global total_write_length
         total_write_length += length
@@ -124,7 +125,7 @@ def write_object(repo, objtype, data):
         with open(path, 'wb') as fout:
             write_compressed([header, stream], fout)
 
-        return sha
+        return sha, length
 
 @contextmanager
 def read_object(repo, sha):
@@ -168,40 +169,49 @@ def convert_size(size_bytes):
    s = round(size_bytes / p, 2)
    return "%s %s" % (s, size_name[i])
 
-def write_tree(repo, rootdir):
-
-    # TODO: remove
-    global total_write_length
-    total_write_length = 0
+def write_tree(repo, rootdir, paths):
+    '''Writes a file system tree and associated objects'''
+    
+    rootdir = os.path.abspath(root).replace('\\' ,'/')
+    if not rootdir.endswith('/'):
+        rootdir += '/'
+    
+    # convert to absolute and normalized paths
+    paths = [os.path.join(rootdir, path).replace('\\', '/') 
+             for path in paths]
+    
+    assert all(path.startswith(rootdir) in paths), "All paths must be within root"
 
     tree = []
-    for subdir, dirs, files in os.walk(rootdir):
-        rootdir = os.path.abspath(rootdir)
-        if not rootdir.endswith(os.path.sep):
-            rootdir += os.path.sep
-
-        for file in files:
-            path = os.path.abspath(os.path.join(subdir, file))
-            rel_path = path[len(rootdir):]
-
-            # TODO: now just ignore git folders
-            if rel_path.startswith('.git'):
-                continue
-
-            stat = os.stat(path)
-            mode = oct(stat.st_mode)[2:]
-            sha = write_object(repo, 'blob', path)
-
-            tree.append((mode, sha, rel_path))
-
-    entry_fmt = "'{}' '{}' '{}'"
-    tree_data = io.BytesIO('\n'.join([entry_fmt.format(*e) for e in tree]).encode())
-    sha = write_object(repo, 'tree', tree_data)
-
-    print("Total written: %s" % convert_size(total_write_length))
-
+    for path in paths:
+        rel_path = path[len(rootdir):]
+        
+        stat = os.stat(path)
+        mode = oct(stat.st_mode)[2:]
+        sha, length = write_object(repo, 'blob', path)
+        tree.append((mode, sha, rel_path))
+        
+    # format tree file
+    entries = [f"'{mode}' '{sha}' '{rel_path}'"
+               for mode, sha, rel_path in tree]
+    stream = io.BytesIO('\n'.join(entries))
+    sha, length = write_object(repo, 'tree', stream)
+    
     return sha
 
+def ensure_refs(repo, namespace):
+    refs_path = os.path.join(repo, 'refs', namespace)
+    
+    if os.exists(refs_path):
+        return
+    
+    os.makedirs()
+    
+    
+def commit_tree(repo, ref, tree_sha, namespace='heads'):
+    
+    ensure_refs(repo)
+    
 
 def restore_tree(repo, sha):
     pass
@@ -216,7 +226,7 @@ if __name__ == '__main__':
 
     
     # Write the object to the repo and get the objects sha
-    sha = write_object('./repo', 'blob', obj_data)
+    sha, _ = write_object('./repo', 'blob', obj_data)
 
     # Read object
     with read_object(repo, sha) as obj:
